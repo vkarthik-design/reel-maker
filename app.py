@@ -17,12 +17,10 @@ if 'audio_path' not in st.session_state:
 if 'yt_error' not in st.session_state:
     st.session_state['yt_error'] = None
 
-
 # --- 2. DEFINE ALL FUNCTIONS ---
 
 def cleanup_temp_files():
     """Removes temporary files and resets memory."""
-    
     files = glob.glob("temp_*") + ["output_video.mp4"]
 
     for f in files:
@@ -36,11 +34,16 @@ def cleanup_temp_files():
 
 
 def download_youtube_audio(url):
-    """Downloads audio from YouTube."""
+    """Downloads only audio from YouTube using reliable browser impersonation."""
 
     audio_opts = {
         'format': 'bestaudio/best',
         'outtmpl': 'temp_audio.%(ext)s',
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Referer': 'https://www.google.com/',
+        },
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
@@ -55,7 +58,7 @@ def download_youtube_audio(url):
 
 
 def handle_youtube_download(url):
-    """Handles YouTube audio download."""
+    """Callback function to ensure session state persists after button click."""
 
     try:
         st.session_state['yt_error'] = None
@@ -70,7 +73,7 @@ def handle_youtube_download(url):
 
 
 def create_video(image_files, duplicate_count, fps, audio_path):
-    """Creates video from images and audio."""
+    """Processes images and merges with audio using MoviePy."""
 
     clips = []
 
@@ -84,20 +87,37 @@ def create_video(image_files, duplicate_count, fps, audio_path):
         with open(temp_img_path, "wb") as f:
             f.write(img_file.getbuffer())
 
-        clip = ImageClip(temp_img_path).with_duration(duration_per_image)
-        clip = clip.resized(target_resolution)
+        # Compatible with MoviePy v1 and v2
+        clip = ImageClip(temp_img_path)
+
+        try:
+            clip = clip.with_duration(duration_per_image)
+            clip = clip.resized(target_resolution)
+        except:
+            clip = clip.set_duration(duration_per_image)
+            clip = clip.resize(target_resolution)
 
         clips.append(clip)
 
     final_video = concatenate_videoclips(clips, method="compose")
-    final_video = final_video.with_fps(fps)
+
+    try:
+        final_video = final_video.with_fps(fps)
+    except:
+        final_video = final_video.set_fps(fps)
 
     audio_clip = AudioFileClip(audio_path)
 
     if audio_clip.duration > final_video.duration:
-        audio_clip = audio_clip.with_duration(final_video.duration)
+        try:
+            audio_clip = audio_clip.with_duration(final_video.duration)
+        except:
+            audio_clip = audio_clip.subclip(0, final_video.duration)
 
-    final_clip = final_video.with_audio(audio_clip)
+    try:
+        final_clip = final_video.with_audio(audio_clip)
+    except:
+        final_clip = final_video.set_audio(audio_clip)
 
     output_filename = "output_video.mp4"
 
@@ -117,9 +137,9 @@ st.set_page_config(
     layout="wide"
 )
 
-# Display logo
-if os.path.exists("BMW.jpg"):
-    st.image("BMW.jpg")
+# Display logo if it exists
+if os.path.exists("download.jpg"):
+    st.image("download.jpg")
 
 st.title("PragyanAI - Multimedia Merger")
 
@@ -127,7 +147,6 @@ st.markdown(
     "Upload multiple images, specify timing, and add audio from a file or YouTube."
 )
 
-# Sidebar
 with st.sidebar:
 
     st.header("Video Settings")
@@ -149,10 +168,8 @@ with st.sidebar:
         cleanup_temp_files()
         st.rerun()
 
-# Main Layout
 col1, col2 = st.columns(2)
 
-# Image Upload
 with col1:
 
     st.subheader("1. Images")
@@ -163,74 +180,79 @@ with col1:
         accept_multiple_files=True
     )
 
-# Audio Section
 with col2:
 
     st.subheader("2. Audio")
 
-    uploaded_audio = st.file_uploader(
-        "Upload Audio File",
-        type=["mp3", "wav"]
+    audio_option = st.radio(
+        "Choose Audio Source",
+        ["Upload Audio", "YouTube URL"]
     )
 
-    youtube_url = st.text_input("Or Paste YouTube URL")
+    if audio_option == "Upload Audio":
 
-    if st.button("Download YouTube Audio"):
+        uploaded_audio = st.file_uploader(
+            "Upload Audio File",
+            type=["mp3", "wav"]
+        )
 
-        if youtube_url:
-            handle_youtube_download(youtube_url)
+        if uploaded_audio:
 
-    if st.session_state['yt_error']:
-        st.error(st.session_state['yt_error'])
+            audio_path = f"temp_audio_{uploaded_audio.name}"
 
-# Generate Video
-st.subheader("3. Create Video")
+            with open(audio_path, "wb") as f:
+                f.write(uploaded_audio.getbuffer())
 
-if st.button("Generate Video"):
-
-    if not uploaded_images:
-        st.warning("Please upload images.")
+            st.session_state['audio_path'] = audio_path
 
     else:
 
-        audio_path = None
+        yt_url = st.text_input("Enter YouTube URL")
 
-        # Uploaded audio
-        if uploaded_audio:
+        if st.button("Download YouTube Audio"):
 
-            audio_path = "temp_uploaded_audio.mp3"
+            if yt_url:
+                handle_youtube_download(yt_url)
 
-            with open(audio_path, "wb") as f:
-                f.write(uploaded_audio.read())
+        if st.session_state['yt_error']:
+            st.error(st.session_state['yt_error'])
 
-        # YouTube audio
-        elif st.session_state['audio_path']:
+        if st.session_state['audio_path']:
+            st.success("YouTube audio downloaded successfully!")
 
-            audio_path = st.session_state['audio_path']
+st.divider()
 
-        else:
-            st.warning("Please upload audio or use YouTube URL.")
+if st.button("Create Video"):
 
-        if audio_path:
+    if not uploaded_images:
+        st.error("Please upload images.")
 
-            with st.spinner("Creating video..."):
+    elif not st.session_state['audio_path']:
+        st.error("Please provide audio.")
 
+    else:
+
+        with st.spinner("Creating video..."):
+
+            try:
                 output_video = create_video(
                     uploaded_images,
                     duplicates,
                     fps,
-                    audio_path
+                    st.session_state['audio_path']
                 )
 
-            st.success("Video Created Successfully!")
+                st.success("Video created successfully!")
 
-            st.video(output_video)
+                st.video(output_video)
 
-            with open(output_video, "rb") as file:
+                with open(output_video, "rb") as file:
+                    st.download_button(
+                        label="Download Video",
+                        data=file,
+                        file_name="output_video.mp4",
+                        mime="video/mp4"
+                    )
 
-                st.download_button(
-                    label="Download Video",
-                    data=file,
-                    file_name="output_video.mp4",
-                    mime="video/mp4"
-                )
+            except Exception as e:
+                st.error(f"Error creating video: {e}")
